@@ -23,11 +23,9 @@ import abc
 import collections
 import contextlib
 
-# Internal dependencies.
-
 import numpy as np
 import six
-from six.moves import xrange  # pylint: disable=redefined-builtin
+from six.moves import range
 
 from dm_control.rl import environment
 from dm_control.rl import specs
@@ -64,7 +62,6 @@ class Environment(environment.Base):
     """
     self._task = task
     self._physics = physics
-    self._time_limit = time_limit
     self._flat_observation = flat_observation
 
     if n_sub_steps is not None and control_timestep is not None:
@@ -77,11 +74,18 @@ class Environment(environment.Base):
     else:
       self._n_sub_steps = 1
 
+    if time_limit == float('inf'):
+      self._step_limit = float('inf')
+    else:
+      self._step_limit = time_limit / (
+          self._physics.timestep() * self._n_sub_steps)
+    self._step_count = 0
     self._reset_next_step = True
 
   def reset(self):
     """Starts a new episode and returns the first `TimeStep`."""
     self._reset_next_step = False
+    self._step_count = 0
     with self._physics.reset_context():
       self._task.initialize_episode(self._physics)
 
@@ -102,7 +106,7 @@ class Environment(environment.Base):
       return self.reset()
 
     self._task.before_step(action, self._physics)
-    for _ in xrange(self._n_sub_steps):
+    for _ in range(self._n_sub_steps):
       self._physics.step()
     self._task.after_step(self._physics)
 
@@ -111,18 +115,21 @@ class Environment(environment.Base):
     if self._flat_observation:
       observation = flatten_observation(observation)
 
-    if self.physics.time() >= self._time_limit:
+    self._step_count += 1
+    if self._step_count >= self._step_limit:
       discount = 1.0
     else:
       discount = self._task.get_termination(self._physics)
 
-    if discount is None:
-      return environment.TimeStep(
-          environment.StepType.MID, reward, 1.0, observation)
-    else:
+    episode_over = discount is not None
+
+    if episode_over:
       self._reset_next_step = True
       return environment.TimeStep(
           environment.StepType.LAST, reward, discount, observation)
+    else:
+      return environment.TimeStep(
+          environment.StepType.MID, reward, 1.0, observation)
 
   def action_spec(self):
     """Returns the action specification for this environment."""
@@ -195,7 +202,7 @@ def compute_n_steps(control_timestep, physics_timestep, tolerance=1e-8):
 def _spec_from_observation(observation):
   result = collections.OrderedDict()
   for key, value in six.iteritems(observation):
-    result[key] = specs.ArraySpec(value.shape, value.dtype)
+    result[key] = specs.ArraySpec(value.shape, value.dtype, name=key)
   return result
 
 # Base class definitions for objects supplied to Environment.
@@ -242,7 +249,10 @@ class Physics(object):
     Yields:
       The `Physics` instance.
     """
-    self.reset()
+    try:
+      self.reset()
+    except PhysicsError:
+      pass
     yield self
     self.after_reset()
 
@@ -330,7 +340,7 @@ class Task(object):
       that describe the shapes, dtypes and elementwise lower and upper bounds
       for the array(s) returned by `self.step`.
     """
-    raise NotImplementedError
+    raise NotImplementedError()
 
   @abc.abstractmethod
   def get_observation(self, physics):

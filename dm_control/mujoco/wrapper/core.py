@@ -24,8 +24,6 @@ import ctypes
 import os
 import weakref
 
-# Internal dependencies.
-
 from absl import logging
 
 from dm_control.mujoco.wrapper import util
@@ -48,6 +46,9 @@ _FAKE_BINARY_FILENAME = b"model.mjb"
 _MAX_VFS_FILENAME_CHARACTERS = 98
 _VFS_FILENAME_TOO_LONG = (
     "Filename length {length} exceeds {limit} character limit: {filename}")
+
+# Constants for MjrContext creation.
+_FONT_SCALE = 150
 
 # Global cache used to store finalizers for freeing ctypes pointers.
 # Contains {pointer_address: weakref_object} pairs.
@@ -465,7 +466,7 @@ class MjModel(wrappers.MjModelWrapper):
     Args:
       model_ptr: A `ctypes.POINTER` to an `mjbindings.types.MJMODEL` instance.
     """
-    super(MjModel, self).__init__(model_ptr)
+    super(MjModel, self).__init__(ptr=model_ptr)
 
   def __getstate__(self):
     # All of MjModel's state is assumed to reside within the MuJoCo C struct.
@@ -669,13 +670,7 @@ class MjData(wrappers.MjDataWrapper):
     #      into this)
     struct_fields = {}
     for name in ["solver", "timer", "warning"]:
-      new_structs = []
-      for struct in getattr(self, name):
-        new_struct = type(struct)()
-        ctypes.memmove(ctypes.byref(new_struct), ctypes.byref(struct),
-                       ctypes.sizeof(struct))
-        new_structs.append(new_struct)
-      struct_fields[name] = new_structs
+      struct_fields[name] = getattr(self, name).copy()
     scalar_field_names = ["ncon", "time", "energy"]
     scalar_fields = {name: getattr(self, name) for name in scalar_field_names}
     static_fields = {"struct_fields": struct_fields,
@@ -688,10 +683,7 @@ class MjData(wrappers.MjDataWrapper):
     self._model, static_fields, buffer_contents = state_tuple
     self.__init__(self.model)
     for name, contents in six.iteritems(static_fields["struct_fields"]):
-      target_carray = getattr(self, name)
-      for i, struct in enumerate(contents):
-        ctypes.memmove(ctypes.byref(target_carray[i]), ctypes.byref(struct),
-                       ctypes.sizeof(struct))
+      getattr(self, name)[:] = contents
 
     for name, value in six.iteritems(static_fields["scalar_fields"]):
       # Array and scalar values must be handled separately.
@@ -727,11 +719,17 @@ class MjData(wrappers.MjDataWrapper):
     """The parent MjModel for this MjData instance."""
     return self._model
 
+  @util.CachedProperty
+  def _contact_buffer(self):
+    """Cached structured array containing the full contact buffer."""
+    contact_array = util.buf_to_npy(
+        super(MjData, self).contact, shape=(self._model.nconmax,))
+    return contact_array
+
   @property
   def contact(self):
-    """Iterator over detected contacts."""
-    return (wrappers.MjContactWrapper(ctypes.pointer(c))
-            for c in super(MjData, self).contact[:self.ncon])
+    """Variable-length recarray containing all current contacts."""
+    return self._contact_buffer[:self.ncon]
 
 
 # Docstrings for these subclasses are inherited from their Wrapper parent class.
@@ -753,12 +751,56 @@ class MjvOption(wrappers.MjvOptionWrapper):
     super(MjvOption, self).__init__(ptr)
 
 
-class MjrContext(wrappers.MjrContextWrapper):
+class UnmanagedMjrContext(wrappers.MjrContextWrapper):
+  """A wrapper for MjrContext that does not manage the native object's lifetime.
+
+  This wrapper is provided for API backward-compatibility reasons, since the
+  creating and destruction of an MjrContext requires an OpenGL context to be
+  provided.
+  """
 
   def __init__(self):
     ptr = ctypes.pointer(types.MJRCONTEXT())
     mjlib.mjr_defaultContext(ptr)
+    super(UnmanagedMjrContext, self).__init__(ptr)
+
+
+class MjrContext(wrappers.MjrContextWrapper):  # pylint: disable=missing-docstring
+
+  def __init__(self, model, gl_context):
+    """Initializes this MjrContext instance.
+
+    Args:
+      model: An `MjModel` instance.
+      gl_context: A `render.ContextBase` instance.
+    """
+    ptr = ctypes.pointer(types.MJRCONTEXT())
+    mjlib.mjr_defaultContext(ptr)
+
+    with gl_context.make_current() as ctx:
+      ctx.call(mjlib.mjr_makeContext, model.ptr, ptr, _FONT_SCALE)
+      ctx.call(mjlib.mjr_setBuffer, enums.mjtFramebuffer.mjFB_OFFSCREEN, ptr)
+      gl_context.increment_refcount()
+
+    # Free resources when the ctypes pointer is garbage collected.
+    def finalize_mjr_context(ptr):
+      with gl_context.make_current() as ctx:
+        ctx.call(mjlib.mjr_freeContext, ptr)
+        gl_context.decrement_refcount()
+
+    _create_finalizer(ptr, finalize_mjr_context)
+
     super(MjrContext, self).__init__(ptr)
+
+  def free(self):
+    """Frees the native resources held by this MjrContext.
+
+    This is an advanced feature for use when manual memory management is
+    necessary. This MjrContext object MUST NOT be used after this function has
+    been called.
+    """
+    _finalize(self._ptr)
+    del self._ptr
 
 
 class MjvScene(wrappers.MjvSceneWrapper):  # pylint: disable=missing-docstring

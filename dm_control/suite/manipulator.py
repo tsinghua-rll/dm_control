@@ -73,47 +73,59 @@ def make_model(use_peg, insert):
 
 
 @SUITE.add('benchmarking', 'hard')
-def bring_ball(observe_target=True, time_limit=_TIME_LIMIT, random=None):
+def bring_ball(observe_target=True, time_limit=_TIME_LIMIT, random=None,
+               environment_kwargs=None):
   """Returns manipulator bring task with the ball prop."""
   use_peg = False
   insert = False
   physics = Physics.from_xml_string(*make_model(use_peg, insert))
   task = Bring(use_peg, insert, observe_target, random=random)
+  environment_kwargs = environment_kwargs or {}
   return control.Environment(
-      physics, task, control_timestep=_CONTROL_TIMESTEP, time_limit=time_limit)
+      physics, task, control_timestep=_CONTROL_TIMESTEP, time_limit=time_limit,
+      **environment_kwargs)
 
 
 @SUITE.add('hard')
-def bring_peg(observe_target=True, time_limit=_TIME_LIMIT, random=None):
+def bring_peg(observe_target=True, time_limit=_TIME_LIMIT, random=None,
+              environment_kwargs=None):
   """Returns manipulator bring task with the peg prop."""
   use_peg = True
   insert = False
   physics = Physics.from_xml_string(*make_model(use_peg, insert))
   task = Bring(use_peg, insert, observe_target, random=random)
+  environment_kwargs = environment_kwargs or {}
   return control.Environment(
-      physics, task, control_timestep=_CONTROL_TIMESTEP, time_limit=time_limit)
+      physics, task, control_timestep=_CONTROL_TIMESTEP, time_limit=time_limit,
+      **environment_kwargs)
 
 
 @SUITE.add('hard')
-def insert_ball(observe_target=True, time_limit=_TIME_LIMIT, random=None):
+def insert_ball(observe_target=True, time_limit=_TIME_LIMIT, random=None,
+                environment_kwargs=None):
   """Returns manipulator insert task with the ball prop."""
   use_peg = False
   insert = True
   physics = Physics.from_xml_string(*make_model(use_peg, insert))
   task = Bring(use_peg, insert, observe_target, random=random)
+  environment_kwargs = environment_kwargs or {}
   return control.Environment(
-      physics, task, control_timestep=_CONTROL_TIMESTEP, time_limit=time_limit)
+      physics, task, control_timestep=_CONTROL_TIMESTEP, time_limit=time_limit,
+      **environment_kwargs)
 
 
 @SUITE.add('hard')
-def insert_peg(observe_target=True, time_limit=_TIME_LIMIT, random=None):
+def insert_peg(observe_target=True, time_limit=_TIME_LIMIT, random=None,
+               environment_kwargs=None):
   """Returns manipulator insert task with the peg prop."""
   use_peg = True
   insert = True
   physics = Physics.from_xml_string(*make_model(use_peg, insert))
   task = Bring(use_peg, insert, observe_target, random=random)
+  environment_kwargs = environment_kwargs or {}
   return control.Environment(
-      physics, task, control_timestep=_CONTROL_TIMESTEP, time_limit=time_limit)
+      physics, task, control_timestep=_CONTROL_TIMESTEP, time_limit=time_limit,
+      **environment_kwargs)
 
 
 class Physics(mujoco.Physics):
@@ -181,7 +193,8 @@ class Bring(base.Task):
 
   def initialize_episode(self, physics):
     """Sets the state of the environment at the start of each episode."""
-    # local shortcuts
+    # Local aliases
+    choice = self.random.choice
     uniform = self.random.uniform
     model = physics.named.model
     data = physics.named.data
@@ -218,8 +231,8 @@ class Bring(base.Task):
 
       # Randomise object location.
       object_init_probs = [_P_IN_HAND, _P_IN_TARGET, 1-_P_IN_HAND-_P_IN_TARGET]
-      init_type = np.random.choice(['in_hand', 'in_target', 'uniform'], 1,
-                                   p=object_init_probs)[0]
+      init_type = choice(['in_hand', 'in_target', 'uniform'],
+                         p=object_init_probs)
       if init_type == 'in_target':
         object_x = target_x
         object_z = target_z

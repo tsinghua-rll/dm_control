@@ -25,7 +25,7 @@ from absl.testing import absltest
 
 from dm_control.mujoco.testing import decorators
 import mock
-from six.moves import xrange  # pylint: disable=redefined-builtin
+from six.moves import range
 
 
 class RunThreadedTest(absltest.TestCase):
@@ -34,7 +34,7 @@ class RunThreadedTest(absltest.TestCase):
   def test_number_of_threads(self, mock_threading):
     num_threads = 5
 
-    mock_threads = [mock.MagicMock() for _ in xrange(num_threads)]
+    mock_threads = [mock.MagicMock() for _ in range(num_threads)]
     for thread in mock_threads:
       thread.start = mock.MagicMock()
       thread.join = mock.MagicMock()
@@ -62,6 +62,24 @@ class RunThreadedTest(absltest.TestCase):
     test_runner(self)
 
     self.assertEqual(calls_per_thread, tested_method.call_count)
+
+  @mock.patch(decorators.__name__ + ".threading")
+  def test_using_the_main_thread(self, mock_threading):
+    mock_thread = mock.MagicMock()
+    mock_thread.start = mock.MagicMock()
+    mock_thread.join = mock.MagicMock()
+    mock_threading.current_thread = mock.MagicMock(return_value=mock_thread)
+
+    test_decorator = decorators.run_threaded(num_threads=None,
+                                             calls_per_thread=1)
+    tested_method = mock.MagicMock()
+    tested_method.__name__ = "foo"
+    test_runner = test_decorator(tested_method)
+    test_runner(self)
+
+    tested_method.assert_called_once()
+    mock_thread.start.assert_not_called()
+    mock_thread.join.assert_not_called()
 
 
 if __name__ == "__main__":

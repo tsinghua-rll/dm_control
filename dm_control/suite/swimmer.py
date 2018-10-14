@@ -32,7 +32,7 @@ from dm_control.utils import rewards
 
 from lxml import etree
 import numpy as np
-from six.moves import xrange  # pylint: disable=redefined-builtin
+from six.moves import range
 
 _DEFAULT_TIME_LIMIT = 30
 _CONTROL_TIMESTEP = .03  # (Seconds)
@@ -54,30 +54,38 @@ def get_model_and_assets(n_joints):
 
 
 @SUITE.add('benchmarking')
-def swimmer6(time_limit=_DEFAULT_TIME_LIMIT, random=None):
+def swimmer6(time_limit=_DEFAULT_TIME_LIMIT, random=None,
+             environment_kwargs=None):
   """Returns a 6-link swimmer."""
-  return _make_swimmer(6, time_limit, random=random)
+  return _make_swimmer(6, time_limit, random=random,
+                       environment_kwargs=environment_kwargs)
 
 
 @SUITE.add('benchmarking')
-def swimmer15(time_limit=_DEFAULT_TIME_LIMIT, random=None):
+def swimmer15(time_limit=_DEFAULT_TIME_LIMIT, random=None,
+              environment_kwargs=None):
   """Returns a 15-link swimmer."""
-  return _make_swimmer(15, time_limit, random=random)
+  return _make_swimmer(15, time_limit, random=random,
+                       environment_kwargs=environment_kwargs)
 
 
 def swimmer(n_links=3, time_limit=_DEFAULT_TIME_LIMIT,
-            random=None):
+            random=None, environment_kwargs=None):
   """Returns a swimmer with n links."""
-  return _make_swimmer(n_links, time_limit, random=random)
+  return _make_swimmer(n_links, time_limit, random=random,
+                       environment_kwargs=environment_kwargs)
 
 
-def _make_swimmer(n_joints, time_limit=_DEFAULT_TIME_LIMIT, random=None):
+def _make_swimmer(n_joints, time_limit=_DEFAULT_TIME_LIMIT, random=None,
+                  environment_kwargs=None):
   """Returns a swimmer control environment."""
   model_string, assets = get_model_and_assets(n_joints)
   physics = Physics.from_xml_string(model_string, assets=assets)
   task = Swimmer(random=random)
+  environment_kwargs = environment_kwargs or {}
   return control.Environment(
-      physics, task, time_limit=time_limit, control_timestep=_CONTROL_TIMESTEP)
+      physics, task, time_limit=time_limit, control_timestep=_CONTROL_TIMESTEP,
+      **environment_kwargs)
 
 
 def _make_model(n_bodies):
@@ -90,7 +98,7 @@ def _make_model(n_bodies):
   sensor = etree.SubElement(mjcf, 'sensor')
 
   parent = head_body
-  for body_index in xrange(n_bodies - 1):
+  for body_index in range(n_bodies - 1):
     site_name = 'site_{}'.format(body_index)
     child = _make_body(body_index=body_index)
     child.append(etree.Element('site', name=site_name))
@@ -155,7 +163,7 @@ class Physics(mujoco.Physics):
 
   def joints(self):
     """Returns all internal joint angles (excluding root joints)."""
-    return self.data.qpos[3:]
+    return self.data.qpos[3:].copy()
 
 
 class Swimmer(base.Task):

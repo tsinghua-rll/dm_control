@@ -228,6 +228,13 @@ def _get_size_name_to_element_names(model):
   assert None not in mocap_body_names
   size_name_to_element_names['nmocap'] = mocap_body_names
 
+  # Arrays with dimension `na` correspond to stateful actuators. MuJoCo's
+  # compiler requires that these are always defined after stateless actuators,
+  # so we only need the final `na` elements in the list of all actuator names.
+  if model.na:
+    all_actuator_names = size_name_to_element_names['nu']
+    size_name_to_element_names['na'] = all_actuator_names[-model.na:]
+
   return size_name_to_element_names
 
 
@@ -257,11 +264,10 @@ def make_axis_indexers(model):
   """Returns a dict that maps size names to `Axis` indexers.
 
   Args:
-    model: An instance of `mjbindings.mjModelWrapper`.
+    model: An instance of `mjbindings.MjModelWrapper`.
 
   Returns:
-    A `dict` mapping from a size name (e.g. `'nbody'`) to a `Axis`
-    instance.
+    A `dict` mapping from a size name (e.g. `'nbody'`) to an `Axis` instance.
   """
 
   size_name_to_element_names = _get_size_name_to_element_names(model)
@@ -610,9 +616,10 @@ def struct_indexer(struct, struct_name, size_to_axis_indexer):
 
   for field_name in array_sizes:
 
-    # Skip over fields that have sizes but aren't numpy arrays, such as text
-    # fields and contacts (b/34805932).
-    if not isinstance(getattr(struct, field_name), np.ndarray):
+    # Skip over structured arrays and fields that have sizes but aren't numpy
+    # arrays, such as text fields and contacts (b/34805932).
+    attr = getattr(struct, field_name)
+    if not isinstance(attr, np.ndarray) or attr.dtype.fields:
       continue
 
     size_names = sizes.array_sizes[struct_name][field_name]
@@ -635,7 +642,19 @@ def struct_indexer(struct, struct_name, size_to_axis_indexer):
 
     field_names.append(field_name)
 
-  struct_indexer_ = collections.namedtuple(struct_name + '_indexer',
-                                           field_names)
+  return make_struct_indexer(field_indexers)
 
-  return struct_indexer_(**field_indexers)
+
+def make_struct_indexer(field_indexers):
+  """Returns an immutable container exposing named indexers as attributes."""
+
+  class StructIndexer(object):
+    __slots__ = ()
+
+    def _asdict(self):
+      return field_indexers.copy()
+
+  for name, indexer in six.iteritems(field_indexers):
+    setattr(StructIndexer, name, indexer)
+
+  return StructIndexer()

@@ -18,26 +18,22 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import unittest
 
 # Internal dependencies.
-
 from absl.testing import absltest
 from absl.testing import parameterized
-
-from dm_control import render
 from dm_control.mujoco import engine
 from dm_control.mujoco import wrapper
 from dm_control.mujoco.testing import assets
+from dm_control.mujoco.wrapper import mjbindings
 from dm_control.mujoco.wrapper.mjbindings import enums
-from dm_control.mujoco.wrapper.mjbindings import mjlib
-
 from dm_control.rl import control
-
 import mock
 import numpy as np
 from six.moves import cPickle
-from six.moves import xrange  # pylint: disable=redefined-builtin
+from six.moves import range
+
+mjlib = mjbindings.mjlib
 
 MODEL_PATH = assets.get_path('cartpole.xml')
 MODEL_WITH_ASSETS = assets.get_contents('model_with_assets.xml')
@@ -66,14 +62,12 @@ class MujocoEngineTest(parameterized.TestCase):
         raise AssertionError("Attribute '{}' differs from expected value. {}"
                              "".format(name, e.message))
 
-  @unittest.skipIf(render.DISABLED, reason=render.DISABLED_MESSAGE)
   @parameterized.parameters(0, 'cart', u'cart')
   def testCameraIndexing(self, camera_id):
     height, width = 480, 640
     _ = engine.Camera(
         self._physics, height, width, camera_id=camera_id)
 
-  @unittest.skipIf(render.DISABLED, reason=render.DISABLED_MESSAGE)
   def testDepthRender(self):
     plane_and_box = """
     <mujoco>
@@ -91,7 +85,6 @@ class MujocoEngineTest(parameterized.TestCase):
     # Furthest pixels should be 3m away (depth is orthographic)
     np.testing.assert_approx_equal(pixels.max(), 3.0, 3)
 
-  @unittest.skipIf(render.DISABLED, reason=render.DISABLED_MESSAGE)
   def testTextOverlay(self):
     height, width = 480, 640
     overlay = engine.TextOverlay(title='Title', body='Body', style='big',
@@ -103,7 +96,6 @@ class MujocoEngineTest(parameterized.TestCase):
     self.assertFalse(np.all(no_overlay == with_overlay),
                      msg='Images are identical with and without text overlay.')
 
-  @unittest.skipIf(render.DISABLED, reason=render.DISABLED_MESSAGE)
   def testSceneOption(self):
     height, width = 480, 640
     scene_option = wrapper.MjvOption()
@@ -118,11 +110,21 @@ class MujocoEngineTest(parameterized.TestCase):
     self.assertFalse(np.all(no_scene_option == with_scene_option),
                      msg='Images are identical with and without scene option.')
 
+  def testRenderFlags(self):
+    height, width = 480, 640
+    cam = engine.Camera(self._physics, height, width, camera_id=0)
+    cam.scene.flags[enums.mjtRndFlag.mjRND_WIREFRAME] = 1  # Enable wireframe
+    enabled = cam.render().copy()
+    cam.scene.flags[enums.mjtRndFlag.mjRND_WIREFRAME] = 0  # Disable wireframe
+    disabled = cam.render().copy()
+    self.assertFalse(
+        np.all(disabled == enabled),
+        msg='Images are identical regardless of whether wireframe is enabled.')
+
   @parameterized.parameters(((0.5, 0.5), (1, 3)),  # pole
                             ((0.5, 0.1), (0, 0)),  # ground
                             ((0.9, 0.9), (None, None)),  # sky
                            )
-  @unittest.skipIf(render.DISABLED, reason=render.DISABLED_MESSAGE)
   def testCameraSelection(self, coordinates, expected_selection):
     height, width = 480, 640
     camera = engine.Camera(self._physics, height, width, camera_id=0)
@@ -135,7 +137,6 @@ class MujocoEngineTest(parameterized.TestCase):
     selected = camera.select(coordinates)
     self.assertEqual(expected_selection, selected[:2])
 
-  @unittest.skipIf(render.DISABLED, reason=render.DISABLED_MESSAGE)
   def testMovableCameraSetGetPose(self):
     height, width = 240, 320
 
@@ -163,7 +164,6 @@ class MujocoEngineTest(parameterized.TestCase):
 
     self.assertFalse(np.all(image == camera.render()))
 
-  @unittest.skipIf(render.DISABLED, reason=render.DISABLED_MESSAGE)
   def testRenderExceptions(self):
     max_width = self._physics.model.vis.global_.offwidth
     max_height = self._physics.model.vis.global_.offheight
@@ -177,7 +177,6 @@ class MujocoEngineTest(parameterized.TestCase):
     with self.assertRaisesRegexp(ValueError, 'camera_id'):
       self._physics.render(max_height, max_width, camera_id=-2)
 
-  @unittest.skipIf(render.DISABLED, reason=render.DISABLED_MESSAGE)
   def testPhysicsRenderMethod(self):
     height, width = 240, 320
     image = self._physics.render(height=height, width=width)
@@ -229,54 +228,59 @@ class MujocoEngineTest(parameterized.TestCase):
 
     with mock_free(self._physics.model) as mock_free_model:
       with mock_free(self._physics.data) as mock_free_data:
-        self._physics.free()
+        with mock_free(self._physics.contexts.mujoco) as mock_free_mjrcontext:
+          self._physics.free()
 
     mock_free_model.assert_called_once()
     mock_free_data.assert_called_once()
+    mock_free_mjrcontext.assert_called_once()
     self.assertIsNone(self._physics.model.ptr)
     self.assertIsNone(self._physics.data.ptr)
 
-  @parameterized.parameters(
-      'mjWARN_INERTIA',
-      'mjWARN_BADQPOS',
-      'mjWARN_BADQVEL',
-      'mjWARN_BADQACC',
-  )
+  @parameterized.parameters(*enums.mjtWarning._fields[:-1])
   def testDivergenceException(self, warning_name):
     warning_enum = getattr(enums.mjtWarning, warning_name)
-    with self._physics.reset_context():
-      self._physics.data.warning[warning_enum].number = 1
-    with self.assertRaisesRegexp(control.PhysicsError, warning_name):
-      self._physics.check_invalid_state()
+    with self.assertRaisesWithLiteralMatch(
+        control.PhysicsError,
+        engine._INVALID_PHYSICS_STATE.format(warning_names=warning_name)):
+      with self._physics.check_invalid_state():
+        self._physics.data.warning[warning_enum].number = 1
+    # Existing warnings should not raise an exception.
+    with self._physics.check_invalid_state():
+      pass
     self._physics.reset()
-    self._physics.check_invalid_state()
+    with self._physics.check_invalid_state():
+      pass
 
   @parameterized.parameters(float('inf'), float('nan'), 1e15)
   def testBadQpos(self, bad_value):
     with self._physics.reset_context():
       self._physics.data.qpos[0] = bad_value
-    mjlib.mj_checkPos(self._physics.model.ptr, self._physics.data.ptr)
     with self.assertRaises(control.PhysicsError):
-      self._physics.check_invalid_state()
+      with self._physics.check_invalid_state():
+        mjlib.mj_checkPos(self._physics.model.ptr, self._physics.data.ptr)
     self._physics.reset()
-    mjlib.mj_checkPos(self._physics.model.ptr, self._physics.data.ptr)
-    self._physics.check_invalid_state()
+    with self._physics.check_invalid_state():
+      mjlib.mj_checkPos(self._physics.model.ptr, self._physics.data.ptr)
 
   def testNanControl(self):
     with self._physics.reset_context():
-      self._physics.data.ctrl[0] = float('nan')
+      pass
 
     # Apply the controls.
-    mjlib.mj_step(self._physics.model.ptr, self._physics.data.ptr)
-    with self.assertRaisesRegexp(control.PhysicsError, 'mjWARN_BADCTRL'):
-      self._physics.check_invalid_state()
+    with self.assertRaisesWithLiteralMatch(
+        control.PhysicsError,
+        engine._INVALID_PHYSICS_STATE.format(warning_names='mjWARN_BADCTRL')):
+      with self._physics.check_invalid_state():
+        self._physics.data.ctrl[0] = float('nan')
+        self._physics.step()
 
   @parameterized.named_parameters(
       ('_copy', lambda x: x.copy()),
       ('_pickle_and_unpickle', lambda x: cPickle.loads(cPickle.dumps(x))),
   )
   def testCopyOrPicklePhysics(self, func):
-    for _ in xrange(10):
+    for _ in range(10):
       self._physics.step()
     physics2 = func(self._physics)
     self.assertNotEqual(physics2.model.ptr, self._physics.model.ptr)
@@ -287,7 +291,7 @@ class MujocoEngineTest(parameterized.TestCase):
     data_attr_to_compare = ('time', 'energy', 'qpos', 'xpos')
     self._assert_attributes_equal(
         physics2.data, self._physics.data, data_attr_to_compare)
-    for _ in xrange(10):
+    for _ in range(10):
       self._physics.step()
       physics2.step()
     self._assert_attributes_equal(
@@ -335,15 +339,6 @@ class MujocoEngineTest(parameterized.TestCase):
     self.assertEqual(np.float, spec.dtype)
     np.testing.assert_array_equal(spec.minimum, [-np.inf, -1.0])
     np.testing.assert_array_equal(spec.maximum, [np.inf, 2.0])
-
-  def testErrorOnContextAccessIfRenderingDisabled(self):
-    expected_message = 'Error message'
-    with mock.patch(engine.__name__ + '.render') as mock_render:
-      mock_render.DISABLED = True
-      mock_render.DISABLED_MESSAGE = expected_message
-      physics = engine.Physics.from_xml_path(MODEL_PATH)
-      with self.assertRaisesWithLiteralMatch(RuntimeError, expected_message):
-        _ = physics.contexts
 
 
 if __name__ == '__main__':

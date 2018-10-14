@@ -31,7 +31,7 @@ from dm_control.suite.utils import randomizers
 from dm_control.utils import containers
 
 import numpy as np
-from six.moves import xrange  # pylint: disable=redefined-builtin
+from six.moves import range
 
 _DEFAULT_TIME_LIMIT = 20  # (seconds)
 _CONTROL_TIMESTEP = .02   # (seconds)
@@ -55,30 +55,38 @@ def get_model_and_assets():
 
 
 @SUITE.add('benchmarking')
-def spin(time_limit=_DEFAULT_TIME_LIMIT, random=None):
+def spin(time_limit=_DEFAULT_TIME_LIMIT, random=None, environment_kwargs=None):
   """Returns the Spin task."""
   physics = Physics.from_xml_string(*get_model_and_assets())
   task = Spin(random=random)
+  environment_kwargs = environment_kwargs or {}
   return control.Environment(
-      physics, task, time_limit=time_limit, control_timestep=_CONTROL_TIMESTEP)
+      physics, task, time_limit=time_limit, control_timestep=_CONTROL_TIMESTEP,
+      **environment_kwargs)
 
 
 @SUITE.add('benchmarking')
-def turn_easy(time_limit=_DEFAULT_TIME_LIMIT, random=None):
+def turn_easy(time_limit=_DEFAULT_TIME_LIMIT, random=None,
+              environment_kwargs=None):
   """Returns the easy Turn task."""
   physics = Physics.from_xml_string(*get_model_and_assets())
   task = Turn(target_radius=_EASY_TARGET_SIZE, random=random)
+  environment_kwargs = environment_kwargs or {}
   return control.Environment(
-      physics, task, time_limit=time_limit, control_timestep=_CONTROL_TIMESTEP)
+      physics, task, time_limit=time_limit, control_timestep=_CONTROL_TIMESTEP,
+      **environment_kwargs)
 
 
 @SUITE.add('benchmarking')
-def turn_hard(time_limit=_DEFAULT_TIME_LIMIT, random=None):
+def turn_hard(time_limit=_DEFAULT_TIME_LIMIT, random=None,
+              environment_kwargs=None):
   """Returns the hard Turn task."""
   physics = Physics.from_xml_string(*get_model_and_assets())
   task = Turn(target_radius=_HARD_TARGET_SIZE, random=random)
+  environment_kwargs = environment_kwargs or {}
   return control.Environment(
-      physics, task, time_limit=time_limit, control_timestep=_CONTROL_TIMESTEP)
+      physics, task, time_limit=time_limit, control_timestep=_CONTROL_TIMESTEP,
+      **environment_kwargs)
 
 
 class Physics(mujoco.Physics):
@@ -198,7 +206,7 @@ class Turn(base.Task):
 def _set_random_joint_angles(physics, random, max_attempts=1000):
   """Sets the joints to a random collision-free state."""
 
-  for _ in xrange(max_attempts):
+  for _ in range(max_attempts):
     randomizers.randomize_limited_and_rotational_joints(physics, random)
     # Check for collisions.
     physics.after_reset()

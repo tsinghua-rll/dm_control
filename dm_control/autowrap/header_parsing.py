@@ -26,21 +26,25 @@ import six
 # NB: Don't enable parser memoization (`pp.ParserElement.enablePackrat()`),
 #     since this results in a ~6x slowdown.
 
+
+NONE = "None"
+CTYPES_CHAR = "ctypes.c_char"
+
 C_TO_CTYPES = {
     # integers
     "int": "ctypes.c_int",
     "unsigned int": "ctypes.c_uint",
-    "char": "ctypes.c_char",
+    "char": CTYPES_CHAR,
     "unsigned char": "ctypes.c_ubyte",
     "size_t": "ctypes.c_size_t",
     # floats
     "float": "ctypes.c_float",
     "double": "ctypes.c_double",
     # pointers
-    "void": "None",
+    "void": NONE,
 }
 
-CTYPES_PTRS = {"None": "ctypes.c_void_p",}
+CTYPES_PTRS = {NONE: "ctypes.c_void_p"}
 
 CTYPES_TO_NUMPY = {
     # integers
@@ -236,8 +240,9 @@ ENUM_DECL = pp.Group(
 
 # Function declarations.
 # ------------------------------------------------------------------------------
-MJAPI = pp.Keyword("MJAPI")
+MJAPI = pp.Keyword("MJAPI").suppress()
 CONST = pp.Keyword("const")
+VOID = pp.Group(pp.Keyword("void") + ~PTR).suppress()
 
 ARG = pp.Group(
     pp.Optional(CONST("is_const")) +
@@ -252,10 +257,10 @@ RET = pp.Group(
     pp.Optional(PTR("ptr")))
 
 FUNCTION_DECL = (
-    RET("return_value") +
+    (VOID | RET("return_value")) +
     NAME("name") +
     LPAREN +
-    pp.delimitedList(ARG, delim=COMMA)("arguments") +
+    (VOID | pp.delimitedList(ARG, delim=COMMA)("arguments")) +
     RPAREN +
     SEMI)
 

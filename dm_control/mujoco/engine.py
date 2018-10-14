@@ -36,29 +36,23 @@ from __future__ import division
 from __future__ import print_function
 
 import collections
+import contextlib
 
-# Internal dependencies.
+from absl import logging
 
 from dm_control import render
 from dm_control.mujoco import index
-
 from dm_control.mujoco import wrapper
 from dm_control.mujoco.wrapper import util
 from dm_control.mujoco.wrapper.mjbindings import enums
 from dm_control.mujoco.wrapper.mjbindings import mjlib
 from dm_control.mujoco.wrapper.mjbindings import types
-
 from dm_control.rl import control as _control
 
 import numpy as np
 import six
-from six.moves import xrange  # pylint: disable=redefined-builtin
 
 from dm_control.rl import specs
-
-_FONT_SCALE = 150
-_MAX_WIDTH = 1024
-_MAX_HEIGHT = 1024
 
 _FONT_STYLES = {
     'normal': enums.mjtFont.mjFONT_NORMAL,
@@ -79,6 +73,9 @@ NamedIndexStructs = collections.namedtuple(
     'NamedIndexStructs', ['model', 'data'])
 Pose = collections.namedtuple(
     'Pose', ['lookat', 'distance', 'azimuth', 'elevation'])
+
+_INVALID_PHYSICS_STATE = (
+    'Physics state is invalid. Warning(s) raised: {warning_names}')
 
 
 class Physics(_control.Physics):
@@ -132,16 +129,13 @@ class Physics(_control.Physics):
     # (most of) mjData is in sync with qpos and qvel. In the case of non-Euler
     # integrators (e.g. RK4) an additional mj_step1 must be called after the
     # last mj_step to ensure mjData syncing.
-    if self.model.opt.integrator == enums.mjtIntegrator.mjINT_EULER:
-      mjlib.mj_step2(self.model.ptr, self.data.ptr)
-      mjlib.mj_step1(self.model.ptr, self.data.ptr)
-    else:
-      mjlib.mj_step(self.model.ptr, self.data.ptr)
+    with self.check_invalid_state():
+      if self.model.opt.integrator == enums.mjtIntegrator.mjINT_EULER:
+        mjlib.mj_step2(self.model.ptr, self.data.ptr)
+      else:
+        mjlib.mj_step(self.model.ptr, self.data.ptr)
 
-    if self.model.opt.integrator != enums.mjtIntegrator.mjINT_EULER:
       mjlib.mj_step1(self.model.ptr, self.data.ptr)
-
-    self.check_invalid_state()
 
   def render(self, height=240, width=320, camera_id=-1, overlays=(),
              depth=False, scene_option=None):
@@ -243,19 +237,20 @@ class Physics(_control.Physics):
     # controls). For example `mj_forward` updates accelerometer and gyro
     # readings, whereas `mj_step1` does not.
     # http://www.mujoco.org/book/programming.html#siForward
-    mjlib.mj_forward(self.model.ptr, self.data.ptr)
+    with self.check_invalid_state():
+      mjlib.mj_forward(self.model.ptr, self.data.ptr)
 
+  @contextlib.contextmanager
   def check_invalid_state(self):
     """Raises a `base.PhysicsError` if the simulation state is invalid."""
-    warning_counts = [self.data.warning[i].number for i in
-                      xrange(enums.mjtWarning.mjNWARNING)]
-    if any(warning_counts):
-      warning_names = []
-      for i in np.where(warning_counts)[0]:
-        warning_names.append(enums.mjtWarning._fields[i])
+    warning_counts_before = self.data.warning.number.copy()
+    yield
+    warnings_raised = self.data.warning.number > warning_counts_before
+    if any(warnings_raised):
+      warning_names = [
+          enums.mjtWarning._fields[i] for i in np.where(warnings_raised)[0]]
       raise _control.PhysicsError(
-          'Physics state is invalid. Warning(s) raised: {}'.format(
-              ', '.join(warning_names)))
+          _INVALID_PHYSICS_STATE.format(warning_names=', '.join(warning_names)))
 
   def __getstate__(self):
     return self.data  # All state is assumed to reside within `self.data`.
@@ -288,12 +283,13 @@ class Physics(_control.Physics):
       data: Instance of `wrapper.MjData`.
     """
     self._data = data
-
-    if not render.DISABLED:
-      self._make_rendering_contexts()
+    self._make_rendering_contexts()
 
     # Call kinematics update to enable rendering.
-    self.after_reset()
+    try:
+      self.after_reset()
+    except _control.PhysicsError as e:
+      logging.warn(str(e))
 
     # Set up named indexing.
     axis_indexers = index.make_axis_indexers(self.model)
@@ -310,6 +306,10 @@ class Physics(_control.Physics):
     """
     self.data.free()
     self.model.free()
+    if self._contexts:
+      self._contexts.mujoco.free()
+      self._contexts.gl.free()
+      self._contexts = None
 
   @classmethod
   def from_model(cls, model):
@@ -404,22 +404,20 @@ class Physics(_control.Physics):
     # Forcibly clear the previous GL context to avoid problems with GL
     # implementations which do not support multiple contexts on a given device.
     if self._contexts:
+      self._contexts.mujoco.free()
       self._contexts.gl.free()
+    # Get the offscreen framebuffer size, as specified in the model XML.
+    max_width = self.model.vis.global_.offwidth
+    max_height = self.model.vis.global_.offheight
     # Create the OpenGL context.
-    render_context = render.Renderer(_MAX_WIDTH, _MAX_HEIGHT)
+    render_context = render.Renderer(max_width=max_width, max_height=max_height)
     # Create the MuJoCo context.
-    mujoco_context = wrapper.MjrContext()
-    with render_context.make_current(_MAX_WIDTH, _MAX_HEIGHT):
-      mjlib.mjr_makeContext(self.model.ptr, mujoco_context.ptr, _FONT_SCALE)
-      mjlib.mjr_setBuffer(
-          enums.mjtFramebuffer.mjFB_OFFSCREEN, mujoco_context.ptr)
+    mujoco_context = wrapper.MjrContext(self.model, render_context)
     self._contexts = Contexts(gl=render_context, mujoco=mujoco_context)
 
   @property
   def contexts(self):
     """Returns a `Contexts` namedtuple, used in `Camera`s and rendering code."""
-    if render.DISABLED:
-      raise RuntimeError(render.DISABLED_MESSAGE)
     return self._contexts
 
   @property
@@ -444,11 +442,11 @@ class Physics(_control.Physics):
   # Named views of simulation data.
 
   def control(self):
-    """Returns MuJoCo actuation vector as defined in the model."""
-    return self.data.ctrl[:]
+    """Returns a copy of the control signals for the actuators."""
+    return self.data.ctrl[:].copy()
 
   def activation(self):
-    """Returns the internal states of 'filter' or 'integrator' actuators.
+    """Returns a copy of the internal states of actuators.
 
     For details, please refer to
     http://www.mujoco.org/book/computation.html#geActuation
@@ -456,19 +454,19 @@ class Physics(_control.Physics):
     Returns:
       Activations in a numpy array.
     """
-    return self.data.act[:]
+    return self.data.act[:].copy()
 
   def state(self):
     """Returns the full physics state. Alias for `get_physics_state`."""
     return np.concatenate(self._physics_state_items())
 
   def position(self):
-    """Returns generalized positions (system configuration)."""
-    return self.data.qpos[:]
+    """Returns a copy of the generalized positions (system configuration)."""
+    return self.data.qpos[:].copy()
 
   def velocity(self):
-    """Returns generalized velocities."""
-    return self.data.qvel[:]
+    """Returns a copy of the generalized velocities."""
+    return self.data.qvel[:].copy()
 
   def timestep(self):
     """Returns the simulation timestep."""
@@ -557,9 +555,10 @@ class Camera(object):
     self._depth_buffer = np.empty((self._height, self._width), dtype=np.float32)
 
     if self._physics.contexts.mujoco is not None:
-      with self._physics.contexts.gl.make_current(self._width, self._height):
-        mjlib.mjr_setBuffer(enums.mjtFramebuffer.mjFB_OFFSCREEN,
-                            self._physics.contexts.mujoco.ptr)
+      with self._physics.contexts.gl.make_current() as ctx:
+        ctx.call(mjlib.mjr_setBuffer,
+                 enums.mjtFramebuffer.mjFB_OFFSCREEN,
+                 self._physics.contexts.mujoco.ptr)
 
   @property
   def width(self):
@@ -576,6 +575,11 @@ class Camera(object):
     """Returns the camera's visualization options."""
     return self._scene_option
 
+  @property
+  def scene(self):
+    """Returns the `mujoco.MjvScene` instance used by the camera."""
+    return self._scene
+
   def update(self, scene_option=None):
     """Updates geometry used for rendering.
 
@@ -588,6 +592,25 @@ class Camera(object):
                           scene_option.ptr, self._perturb.ptr,
                           self._render_camera.ptr, enums.mjtCatBit.mjCAT_ALL,
                           self._scene.ptr)
+
+  def _render_on_gl_thread(self, depth, overlays):
+    """Performs only those rendering calls that require an OpenGL context."""
+
+    # Render the scene.
+    mjlib.mjr_render(self._rect, self._scene.ptr,
+                     self._physics.contexts.mujoco.ptr)
+
+    if not depth:
+      # If rendering RGB, draw any text overlays on top of the image.
+      for overlay in overlays:
+        overlay.draw(self._physics.contexts.mujoco.ptr, self._rect)
+
+    # Read the contents of either the RGB or depth buffer.
+    mjlib.mjr_readPixels(
+        self._rgb_buffer if not depth else None,
+        self._depth_buffer if depth else None,
+        self._rect,
+        self._physics.contexts.mujoco.ptr)
 
   def render(self, overlays=(), depth=False, scene_option=None):
     """Renders the camera view as a numpy array of pixel values.
@@ -610,34 +633,27 @@ class Camera(object):
     if depth and overlays:
       raise ValueError('Overlays are not supported with depth rendering.')
 
+    # Update scene geometry.
     self.update(scene_option=scene_option)
 
-    with self._physics.contexts.gl.make_current(self._width, self._height):
-      mjlib.mjr_render(self._rect, self._scene.ptr,
-                       self._physics.contexts.mujoco.ptr)
+    # Render scene and text overlays, read contents of RGB or depth buffer.
+    with self._physics.contexts.gl.make_current() as ctx:
+      ctx.call(self._render_on_gl_thread, depth=depth, overlays=overlays)
 
-      if depth:
-        mjlib.mjr_readPixels(None, self._depth_buffer, self._rect,
-                             self._physics.contexts.mujoco.ptr)
+    if depth:
+      # Get the distances to the near and far clipping planes.
+      extent = self._physics.model.stat.extent
+      near = self._physics.model.vis.map_.znear * extent
+      far = self._physics.model.vis.map_.zfar * extent
+      # Convert from [0 1] to depth in meters, see links below:
+      # http://stackoverflow.com/a/6657284/1461210
+      # https://www.khronos.org/opengl/wiki/Depth_Buffer_Precision
+      image = near / (1 - self._depth_buffer * (1 - near / far))
+    else:
+      image = self._rgb_buffer
 
-        # Get distance of near and far clipping planes.
-        extent = self._physics.model.stat.extent
-        near = self._physics.model.vis.map_.znear * extent
-        far = self._physics.model.vis.map_.zfar * extent
-
-        # Convert from [0 1] to depth in meters, see links below.
-        # http://stackoverflow.com/a/6657284/1461210
-        # https://www.khronos.org/opengl/wiki/Depth_Buffer_Precision
-        self._depth_buffer = near / (1 - self._depth_buffer * (1 - near / far))
-
-      else:
-        for overlay in overlays:
-          overlay.draw(self._physics.contexts.mujoco.ptr, self._rect)
-
-        mjlib.mjr_readPixels(self._rgb_buffer, None, self._rect,
-                             self._physics.contexts.mujoco.ptr)
-
-    return np.flipud(self._depth_buffer if depth else self._rgb_buffer)
+    # The first row in the buffer is the bottom row of pixels in the image.
+    return np.flipud(image)
 
   def select(self, cursor_position):
     """Returns bodies and geoms visible at given coordinates in the frame.

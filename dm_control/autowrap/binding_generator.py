@@ -237,12 +237,13 @@ class BindingGenerator(object):
       # 1D array with size defined at compile time
       if token.size:
         shape = self.get_shape_tuple(token.size)
-        if typename in header_parsing.CTYPES_TO_NUMPY:
-          out = c_declarations.StaticNDArray(name, typename, shape, comment,
-                                             parent, is_const)
+        if typename in {header_parsing.NONE, header_parsing.CTYPES_CHAR}:
+          out = c_declarations.StaticPtrArray(
+              name, typename, shape, comment, parent, is_const)
         else:
-          out = c_declarations.StaticPtrArray(name, typename, shape, comment,
-                                              parent, is_const)
+          out = c_declarations.StaticNDArray(
+              name, typename, shape, comment, parent, is_const)
+
       elif token.ptr:
 
         # Pointer to a numpy-compatible type, could be an array or a scalar
@@ -367,13 +368,19 @@ class BindingGenerator(object):
       for token in tokens:
         name = codegen_util.mangle_varname(token.name)
         comment = codegen_util.mangle_comment(token.comment)
-        args = codegen_util.UniqueOrderedDict()
-        for arg in token.arguments:
-          a = self.get_type_from_token(arg)
-          args[a.name] = a
-        r = self.get_type_from_token(token.return_value)
-        f = c_declarations.Function(name, args, r, comment)
-        self.funcs_dict[f.name] = f
+        if token.arguments:
+          args = codegen_util.UniqueOrderedDict()
+          for arg in token.arguments:
+            a = self.get_type_from_token(arg)
+            args[a.name] = a
+        else:
+          args = None
+        if token.return_value:
+          ret_val = self.get_type_from_token(token.return_value)
+        else:
+          ret_val = None
+        func = c_declarations.Function(name, args, ret_val, comment)
+        self.funcs_dict[func.name] = func
 
   def parse_global_strings(self, src):
     """Updates self.strings_dict."""
@@ -409,6 +416,7 @@ class BindingGenerator(object):
         [docstring] + _BOILERPLATE_IMPORTS + list(imports) + ["\n"])
 
   def write_consts(self, fname):
+    """Write constants."""
     imports = [
         "# pylint: disable=invalid-name",
     ]
@@ -420,6 +428,7 @@ class BindingGenerator(object):
       f.write("\n" + codegen_util.comment_line("End of generated code"))
 
   def write_enums(self, fname):
+    """Write enum definitions."""
     with open(fname, "w") as f:
       imports = [
           "import collections",
@@ -441,6 +450,7 @@ class BindingGenerator(object):
       f.write("\n" + codegen_util.comment_line("End of generated code"))
 
   def write_types(self, fname):
+    """Write ctypes struct declarations."""
     imports = [
         "import ctypes",
     ]
@@ -452,6 +462,7 @@ class BindingGenerator(object):
       f.write("\n" + codegen_util.comment_line("End of generated code"))
 
   def write_wrappers(self, fname):
+    """Write wrapper classes for ctypes structs."""
     with open(fname, "w") as f:
       imports = [
           "import ctypes",
@@ -510,6 +521,7 @@ class BindingGenerator(object):
       f.write("\n" + codegen_util.comment_line("End of generated code"))
 
   def write_index_dict(self, fname):
+    """Write file containing array shape information for indexing."""
     pp = pprint.PrettyPrinter()
     output_string = pp.pformat(dict(self.index_dict))
     indent = codegen_util.Indenter()

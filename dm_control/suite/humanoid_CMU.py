@@ -52,21 +52,25 @@ def get_model_and_assets():
 
 
 @SUITE.add()
-def stand(time_limit=_DEFAULT_TIME_LIMIT, random=None):
+def stand(time_limit=_DEFAULT_TIME_LIMIT, random=None, environment_kwargs=None):
   """Returns the Stand task."""
   physics = Physics.from_xml_string(*get_model_and_assets())
   task = HumanoidCMU(move_speed=0, random=random)
+  environment_kwargs = environment_kwargs or {}
   return control.Environment(
-      physics, task, time_limit=time_limit, control_timestep=_CONTROL_TIMESTEP)
+      physics, task, time_limit=time_limit, control_timestep=_CONTROL_TIMESTEP,
+      **environment_kwargs)
 
 
 @SUITE.add()
-def run(time_limit=_DEFAULT_TIME_LIMIT, random=None):
+def run(time_limit=_DEFAULT_TIME_LIMIT, random=None, environment_kwargs=None):
   """Returns the Run task."""
   physics = Physics.from_xml_string(*get_model_and_assets())
   task = HumanoidCMU(move_speed=_RUN_SPEED, random=random)
+  environment_kwargs = environment_kwargs or {}
   return control.Environment(
-      physics, task, time_limit=time_limit, control_timestep=_CONTROL_TIMESTEP)
+      physics, task, time_limit=time_limit, control_timestep=_CONTROL_TIMESTEP,
+      **environment_kwargs)
 
 
 class Physics(mujoco.Physics):
@@ -86,7 +90,7 @@ class Physics(mujoco.Physics):
 
   def center_of_mass_velocity(self):
     """Returns the velocity of the center-of-mass."""
-    return self.named.data.subtree_linvel['thorax']
+    return self.named.data.sensordata['thorax_subtreelinvel'].copy()
 
   def torso_vertical_orientation(self):
     """Returns the z-projection of the thorax orientation matrix."""
@@ -94,7 +98,7 @@ class Physics(mujoco.Physics):
 
   def joint_angles(self):
     """Returns the state without global orientation or position."""
-    return self.data.qpos[7:]  # Skip the 7 DoFs of the free root joint.
+    return self.data.qpos[7:].copy()  # Skip the 7 DoFs of the free root joint.
 
   def extremities(self):
     """Returns end effector positions in egocentric frame."""

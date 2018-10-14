@@ -20,20 +20,17 @@ from __future__ import division
 from __future__ import print_function
 
 import collections
-import unittest
 
 # Internal dependencies.
-
 from absl.testing import absltest
 from absl.testing import parameterized
-
-from dm_control import render
-from dm_control.rl import environment
-from dm_control.rl import specs
 from dm_control.suite import cartpole
 from dm_control.suite.wrappers import pixels
 
 import numpy as np
+
+from dm_control.rl import environment
+from dm_control.rl import specs
 
 
 class FakePhysics(object):
@@ -63,7 +60,6 @@ class FakeArrayObservationEnvironment(environment.Base):
     return specs.ArraySpec(shape=(2,), dtype=np.float)
 
 
-@unittest.skipIf(render.DISABLED, reason=render.DISABLED_MESSAGE)
 class PixelsTest(parameterized.TestCase):
 
   @parameterized.parameters(True, False)

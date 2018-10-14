@@ -60,23 +60,29 @@ def make_model(n_boxes):
 
 
 @SUITE.add('hard')
-def stack_2(observable=True, time_limit=_TIME_LIMIT, random=None):
+def stack_2(observable=True, time_limit=_TIME_LIMIT, random=None,
+            environment_kwargs=None):
   """Returns stacker task with 2 boxes."""
   n_boxes = 2
   physics = Physics.from_xml_string(*make_model(n_boxes=n_boxes))
   task = Stack(n_boxes, observable, random=random)
+  environment_kwargs = environment_kwargs or {}
   return control.Environment(
-      physics, task, control_timestep=_CONTROL_TIMESTEP, time_limit=time_limit)
+      physics, task, control_timestep=_CONTROL_TIMESTEP, time_limit=time_limit,
+      **environment_kwargs)
 
 
 @SUITE.add('hard')
-def stack_4(observable=True, time_limit=_TIME_LIMIT, random=None):
+def stack_4(observable=True, time_limit=_TIME_LIMIT, random=None,
+            environment_kwargs=None):
   """Returns stacker task with 4 boxes."""
   n_boxes = 4
   physics = Physics.from_xml_string(*make_model(n_boxes=n_boxes))
   task = Stack(n_boxes, observable, random=random)
+  environment_kwargs = environment_kwargs or {}
   return control.Environment(
-      physics, task, control_timestep=_CONTROL_TIMESTEP, time_limit=time_limit)
+      physics, task, control_timestep=_CONTROL_TIMESTEP, time_limit=time_limit,
+      **environment_kwargs)
 
 
 class Physics(mujoco.Physics):
@@ -139,7 +145,8 @@ class Stack(base.Task):
 
   def initialize_episode(self, physics):
     """Sets the state of the environment at the start of each episode."""
-    # local shortcuts
+    # Local aliases
+    randint = self.random.randint
     uniform = self.random.uniform
     model = physics.named.model
     data = physics.named.data
@@ -160,7 +167,7 @@ class Stack(base.Task):
       data.qpos['finger'] = data.qpos['thumb']
 
       # Randomise target location.
-      target_height = 2*np.random.randint(self._n_boxes) + 1
+      target_height = 2*randint(self._n_boxes) + 1
       box_size = model.geom_size['target', 0]
       model.body_pos['target', 'z'] = box_size * target_height
       model.body_pos['target', 'x'] = uniform(-.37, .37)

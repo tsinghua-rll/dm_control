@@ -25,34 +25,42 @@ import os
 from absl.testing import absltest
 from absl.testing import parameterized
 from dm_control.mujoco.testing import image_utils
+import mock
 import numpy as np
 from PIL import Image
+
+SEED = 0
 
 
 class ImageUtilsTest(parameterized.TestCase):
 
   @parameterized.parameters(
       (0, 0, 0.0),
-      (0, 1, 12.264),
-      (0, 9, 39.052))
+      (0, 2, 23.208),
+      (0, 18, 53.881))
   def test_compute_rms(self, index1, index2, expected_rms):
-    frames = list(image_utils.humanoid.iter_load())
+    # Force loading of the software rendering reference images regardless of the
+    # actual GL backend, since these should match the expected RMS values.
+    with mock.patch.object(image_utils, 'BACKEND_STRING', new='software'):
+      frames = list(image_utils.humanoid.iter_load())
     image1 = frames[index1]
     image2 = frames[index2]
     rms = image_utils.compute_rms(image1, image2)
     self.assertAlmostEqual(rms, expected_rms, places=3)
 
   def test_assert_images_close(self):
-    image1 = np.random.randint(0, 255, size=(64, 64, 3), dtype=np.uint8)
-    image2 = np.random.randint(0, 255, size=(64, 64, 3), dtype=np.uint8)
+    random_state = np.random.RandomState(SEED)
+    image1 = random_state.randint(0, 255, size=(64, 64, 3), dtype=np.uint8)
+    image2 = random_state.randint(0, 255, size=(64, 64, 3), dtype=np.uint8)
     image_utils.assert_images_close(image1, image1, tolerance=0)
     with self.assertRaisesRegexp(image_utils.ImagesNotClose,
                                  'RMS error exceeds tolerance'):
       image_utils.assert_images_close(image1, image2)
 
   def test_save_images_on_failure(self):
-    image1 = np.random.randint(0, 255, size=(64, 64, 3), dtype=np.uint8)
-    image2 = np.random.randint(0, 255, size=(64, 64, 3), dtype=np.uint8)
+    random_state = np.random.RandomState(SEED)
+    image1 = random_state.randint(0, 255, size=(64, 64, 3), dtype=np.uint8)
+    image2 = random_state.randint(0, 255, size=(64, 64, 3), dtype=np.uint8)
     diff = (0.5 * (image2.astype(np.int16) - image1 + 255)).astype(np.uint8)
     message = 'exception message'
     output_dir = absltest.get_default_test_tmpdir()
@@ -61,7 +69,8 @@ class ImageUtilsTest(parameterized.TestCase):
     def func():
       raise image_utils.ImagesNotClose(message, image1, image2)
 
-    with self.assertRaisesWithLiteralMatch(image_utils.ImagesNotClose, message):
+    with self.assertRaisesRegexp(image_utils.ImagesNotClose,
+                                 '{}.*'.format(message)):
       func()
 
     def validate_saved_file(name, expected_contents):

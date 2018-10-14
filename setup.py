@@ -1,4 +1,4 @@
-# Copyright 2017 The dm_control Authors.
+# Copyright 2017-2018 The dm_control Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -152,9 +152,11 @@ setup(
         'absl-py',
         'enum34',
         'future',
+        'futures',
         'glfw',
         'lxml',
         'numpy',
+        'pyopengl',
         'pyparsing',
         'setuptools',
         'six',
@@ -168,10 +170,26 @@ setup(
     test_suite='nose.collector',
     packages=find_packages(),
     package_data={
-        'dm_control.mujoco.testing':
-        ['assets/*.png', 'assets/frames/*.png', 'assets/*.stl', 'assets/*.xml'],
-        'dm_control.suite':
-        ['*.xml', 'common/*.xml'],
+        'dm_control.composer': [
+            'arena.xml'
+        ],
+        'dm_control.mjcf': [
+            'schema.xml',
+            'test_assets/*.xml',
+            'test_assets/meshes/*.stl',
+            'test_assets/meshes/more_meshes/*.stl',
+            'test_assets/textures/*.png',
+        ],
+        'dm_control.mujoco.testing': [
+            'assets/*.png',
+            'assets/*.stl',
+            'assets/*.xml'
+            'assets/frames/*.png',
+        ],
+        'dm_control.suite': [
+            '*.xml',
+            'common/*.xml'
+        ],
     },
     cmdclass={
         'build_mjbindings': BuildMJBindingsCommand,

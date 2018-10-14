@@ -1,4 +1,4 @@
-# Copyright 2017 The dm_control Authors.
+# Copyright 2017-2018 The dm_control Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -27,29 +27,34 @@ import platform
 import sys
 import threading
 # Internal dependencies.
+from dm_control import render
 import numpy as np
 import six
 
-from dm_control.utils import resources
+from dm_control.utils import io as resources
 
 # Environment variables that can be used to override the default paths to the
 # MuJoCo shared library and key file.
 ENV_MJLIB_PATH = "MJLIB_PATH"
 ENV_MJKEY_PATH = "MJKEY_PATH"
 
-
 MJLIB_NAME = "mujoco150"
 
 
 def _get_shared_library_filename():
-  try:
-    libc_path = ctypes.util.find_library("c")
-    libc_filename = os.path.split(libc_path)[1]
-    prefix = "lib" if libc_filename.startswith("lib") else ""
-    extension = libc_filename.split(".")[1]
-  except (AttributeError, IndexError):
+  """Get platform-dependent prefix and extension of MuJoCo shared library."""
+  platform_name = platform.system()
+  if platform_name == "Linux":
     prefix = "lib"
     extension = "so"
+  elif platform_name == "Darwin":
+    prefix = "lib"
+    extension = "dylib"
+  elif platform_name == "Windows":
+    prefix = ""
+    extension = "dll"
+  else:
+    raise OSError("Unsupported platform: {}".format(platform_name))
   return "{}{}.{}".format(prefix, MJLIB_NAME, extension)
 
 
@@ -101,10 +106,15 @@ def get_mjlib():
         if "undefined symbol" in str(e) and platform.system() == "Linux":
           # This means that we've found MuJoCo but haven't loaded GLEW.
           ctypes.CDLL(ctypes.util.find_library("GL"), ctypes.RTLD_GLOBAL)
-          ctypes.CDLL(ctypes.util.find_library("GLEW"), ctypes.RTLD_GLOBAL)
+          if render.BACKEND == "osmesa":
+            libglew = os.path.join(
+                os.path.dirname(library_path), "libglewosmesa.so")
+          else:
+            libglew = ctypes.util.find_library("GLEW")
+          ctypes.CDLL(libglew, ctypes.RTLD_GLOBAL)
           return ctypes.cdll.LoadLibrary(library_path)
     raw_path = DEFAULT_MJLIB_PATH
-  return ctypes.cdll.LoadLibrary(_get_full_path(raw_path))
+  return ctypes.CDLL(_get_full_path(raw_path), ctypes.RTLD_GLOBAL)
 
 
 def get_mjkey_path():
@@ -159,17 +169,6 @@ class CachedProperty(property):
         return obj_dict.setdefault(name, self.fget(obj))
 
 
-# It's easy to create numpy arrays from a pointer then have these persist after
-# the model has been destroyed and its underlying memory freed. To mitigate the
-# risk of writing to a pointer after it has been freed, all array attributes are
-# read-only by default. In order to write to them you need to explicitly set
-# their ".writeable" flag to True (the SetFlags context manager above provides
-# a convenient way to do this).
-
-# The proper solution would be to prevent the model from being garbage-collected
-# whilst any of the views onto its buffers are still alive.
-
-
 def _as_array(src, shape):
   """Converts a native `src` array to a managed numpy buffer.
 
@@ -194,6 +193,12 @@ def _as_array(src, shape):
   ptr = ctypes.cast(src, ctypes.POINTER(ctype * size))
   buf = np.frombuffer(ptr.contents, dtype=ctype)
   buf.shape = shape
+
+  # If we are wrapping an array of ctypes structs, return a `numpy.recarray`.
+  # This allows the fields of the struct to be accessed as attributes.
+  if issubclass(ctype, ctypes.Structure):
+    buf = buf.view(np.recarray)
+
   return buf
 
 

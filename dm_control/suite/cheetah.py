@@ -46,11 +46,13 @@ def get_model_and_assets():
 
 
 @SUITE.add('benchmarking')
-def run(time_limit=_DEFAULT_TIME_LIMIT, random=None):
+def run(time_limit=_DEFAULT_TIME_LIMIT, random=None, environment_kwargs=None):
   """Returns the run task."""
   physics = Physics.from_xml_string(*get_model_and_assets())
   task = Cheetah(random)
-  return control.Environment(physics, task, time_limit=time_limit)
+  environment_kwargs = environment_kwargs or {}
+  return control.Environment(physics, task, time_limit=time_limit,
+                             **environment_kwargs)
 
 
 class Physics(mujoco.Physics):
@@ -58,12 +60,13 @@ class Physics(mujoco.Physics):
 
   def speed(self):
     """Returns the horizontal speed of the Cheetah."""
-    return self.named.data.subtree_linvel['torso', 'x']
+    return self.named.data.sensordata['torso_subtreelinvel'][0]
 
 
 class Cheetah(base.Task):
   """A `Task` to train a running Cheetah."""
 
+  # pylint: disable=useless-super-delegation
   def __init__(self, random=None):
     """Initializes an instance of `Cheetah`.
 
@@ -88,7 +91,7 @@ class Cheetah(base.Task):
     """Returns an observation of the state, ignoring horizontal position."""
     obs = collections.OrderedDict()
     # Ignores horizontal position to maintain translational invariance.
-    obs['position'] = physics.data.qpos[1:]
+    obs['position'] = physics.data.qpos[1:].copy()
     obs['velocity'] = physics.velocity()
     return obs
 
