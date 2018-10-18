@@ -163,7 +163,7 @@ class HumanoidCMU(base.Task):
     quad_impact_cost = .5e-6 * np.square(physics.data.cfrc_ext).sum()
     quad_impact_cost = min(quad_impact_cost, 10)
     reward = lin_vel_cost - quad_ctrl_cost - quad_impact_cost + alive_bonus
-    self.done = bool((physics.data.qpos[2] < 1.0) or (physics.data.qpos[2] > 2.0))
+    self.done = bool((physics.data.qpos[2] < 0.67) or (physics.data.qpos[2] > 1.33))
     return reward
     # """Returns a reward to the agent."""
     # standing = rewards.tolerance(physics.head_height(),
