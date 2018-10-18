@@ -20,7 +20,6 @@ from __future__ import division
 from __future__ import print_function
 
 import collections
-import copy
 import re
 import weakref
 
@@ -40,9 +39,11 @@ flags.DEFINE_boolean('pymjcf_log_xml', False,
                      'Whether to log the generated XML on model compilation.')
 
 _XML_PRINT_SHARD_SIZE = 100
+_PICKLING_NOT_SUPPORTED = 'Objects of type {type} cannot be pickled.'
 
 _Attribute = collections.namedtuple(
-    'Attribute', ('name', 'get_named_indexer', 'triggers_dirty'))
+    'Attribute',
+    ('name', 'get_named_indexer', 'triggers_dirty', 'disable_on_write'))
 
 
 def _pymjcf_log_xml():
@@ -65,15 +66,22 @@ def _get_attributes(size_names, strip_prefixes):
           lambda physics, name=name: getattr(physics.named.data, name))
       triggers_dirty = attrib_name in constants.MJDATA_TRIGGERS_DIRTY
       out[attrib_name] = _Attribute(
-          attrib_name, named_indexer_getter, triggers_dirty)
+          name=attrib_name,
+          get_named_indexer=named_indexer_getter,
+          triggers_dirty=triggers_dirty,
+          disable_on_write=())
   for name, size in six.iteritems(sizes.array_sizes['mjmodel']):
     if size[0] in size_names:
       attrib_name = strip(name)
       named_indexer_getter = (
           lambda physics, name=name: getattr(physics.named.model, name))
       triggers_dirty = attrib_name not in constants.MJMODEL_DOESNT_TRIGGER_DIRTY
+      disable_on_write = constants.MJMODEL_DISABLE_ON_WRITE.get(name, ())
       out[attrib_name] = _Attribute(
-          attrib_name, named_indexer_getter, triggers_dirty)
+          name=attrib_name,
+          get_named_indexer=named_indexer_getter,
+          triggers_dirty=triggers_dirty,
+          disable_on_write=disable_on_write)
   return out
 
 
@@ -165,42 +173,77 @@ def names_from_elements(mjcf_elements):
   return namespace, named_index
 
 
-class _SynchronizingArrayWrapper(np.ndarray):
-  """A non-contiguous view of an ndarray that synchronizes with the original."""
+class SynchronizingArrayWrapper(np.ndarray):
+  """A non-contiguous view of an ndarray that synchronizes with the original.
 
-  def __new__(cls, backing_array, backing_index,
-              physics, triggers_dirty):
-    obj = backing_array[backing_index].view(_SynchronizingArrayWrapper)
+  Note: this class should not be instantiated directly.
+  """
+  __slots__ = (
+      '_backing_array',
+      '_backing_index',
+      '_physics',
+      '_triggers_dirty',
+      '_disable_on_write',
+  )
+
+  def __new__(cls,
+              backing_array,
+              backing_index,
+              physics,
+              triggers_dirty,
+              disable_on_write):
+    obj = backing_array[backing_index].view(SynchronizingArrayWrapper)
     # pylint: disable=protected-access
     obj._backing_array = backing_array
     obj._backing_index = backing_index
     obj._physics = physics
     obj._triggers_dirty = triggers_dirty
+    obj._disable_on_write = disable_on_write
     # pylint: enable=protected-access
     return obj
 
   def _synchronize_from_backing_array(self):
     if self._physics.is_dirty and not self._triggers_dirty:
       self._physics.forward()
-    super(_SynchronizingArrayWrapper, self).__setitem__(
+    super(SynchronizingArrayWrapper, self).__setitem__(
         slice(None, None, None), self._backing_array[self._backing_index])
 
+  def copy(self, order='C'):
+    return np.copy(self, order=order)
+
   def __copy__(self):
-    return copy.copy(self.view(np.ndarray))
+    return self.copy()
 
   def __deepcopy__(self, memo):
-    return copy.deepcopy(self.view(np.ndarray))
+    return self.copy()
+
+  def __reduce__(self):
+    raise NotImplementedError(_PICKLING_NOT_SUPPORTED.format(type=type(self)))
 
   def __setitem__(self, index, value):
     if self._physics.is_dirty and not self._triggers_dirty:
       self._physics.forward()
-    super(_SynchronizingArrayWrapper, self).__setitem__(index, value)
+    super(SynchronizingArrayWrapper, self).__setitem__(index, value)
     if isinstance(self._backing_index, collections.Iterable):
       if isinstance(index, tuple):
         resolved_index = (self._backing_index[index[0]],) + index[1:]
       else:
         resolved_index = self._backing_index[index]
       self._backing_array[resolved_index] = value
+
+    for backing_array, backing_index in self._disable_on_write:
+      if isinstance(index, collections.Iterable):
+        # We only need the row component of the index.
+        if isinstance(index, tuple):
+          resolved_index = backing_index[index[0]]
+        else:
+          resolved_index = backing_index[index]
+      else:
+        # If it is only an index into the columns of the backing array then we
+        # just discard it and use the backing index.
+        resolved_index = backing_index
+      backing_array[resolved_index] = 0
+
     if self._triggers_dirty:
       self._physics.mark_as_dirty()
 
@@ -215,10 +258,15 @@ class Binding(object):
   where `physics` is an instance of `mjcf.Physics`. See docstring for that
   function for details.
   """
-
-  __slots__ = ['_attributes', '_physics', '_namespace',
-               '_named_index', '_named_indexers',
-               '_getattr_cache', '_array_index_cache']
+  __slots__ = (
+      '_attributes',
+      '_physics',
+      '_namespace',
+      '_named_index',
+      '_named_indexers',
+      '_getattr_cache',
+      '_array_index_cache',
+  )
 
   def __init__(self, physics, namespace, named_index):
     try:
@@ -283,13 +331,35 @@ class Binding(object):
       except KeyError:
         array, index = self._get_cached_array_and_index(name)
         triggers_dirty = self._attributes[name].triggers_dirty
+
+        # A list of (array, index) tuples specifying other addresses that need
+        # to be zeroed out when this array attribute is written to.
+        disable_on_write = []
+        for name_to_disable in self._attributes[name].disable_on_write:
+          array_to_disable, index_to_disable = self._get_cached_array_and_index(
+              name_to_disable)
+          # Ensure that the result of indexing is a `SynchronizingArrayWrapper`
+          # rather than a scalar, otherwise we won't be able to write into it.
+          if array_to_disable.ndim == 1:
+            if isinstance(index_to_disable, np.ndarray):
+              index_to_disable = index_to_disable.copy().reshape(-1, 1)
+            else:
+              index_to_disable = [index_to_disable]
+          disable_on_write.append((array_to_disable, index_to_disable))
+
         if self._physics.is_dirty and not triggers_dirty:
           self._physics.forward()
-        if isinstance(index, int):
+        if isinstance(index, int) and array.ndim == 1:
+          # Case where indexing results in a scalar.
           out = array[index]
         else:
-          out = _SynchronizingArrayWrapper(array, index,
-                                           self._physics, triggers_dirty)
+          # Case where indexing results in an array.
+          out = SynchronizingArrayWrapper(
+              backing_array=array,
+              backing_index=index,
+              physics=self._physics,
+              triggers_dirty=triggers_dirty,
+              disable_on_write=disable_on_write)
           self._getattr_cache[name] = out
       return out
 
@@ -301,6 +371,10 @@ class Binding(object):
         self._physics.forward()
       array, index = self._get_cached_array_and_index(name)
       array[index] = value
+      for name_to_disable in self._attributes[name].disable_on_write:
+        disable_array, disable_index = self._get_cached_array_and_index(
+            name_to_disable)
+        disable_array[disable_index] = 0
       if self._attributes[name].triggers_dirty:
         self._physics.mark_as_dirty()
 
@@ -466,8 +540,8 @@ class Physics(mujoco.Physics):
     ```
 
     Note that the binding takes into account the type of element. This allows us
-    to remove prefixes for from certain common attributes in order to unify
-    access. For example, we can use:
+    to remove prefixes from certain common attributes in order to unify access.
+    For example, we can use:
 
     ```python
     physics.bind(geom_element).pos = [1, 2, 3]
@@ -491,22 +565,42 @@ class Physics(mujoco.Physics):
     done lazily when an updated value is required, so repeated value
     modifications do not incur a performance penalty.
 
-    It is also possible to bind a sequence containing multiple elements,
-    provided they are all of the same type. However, note that for a sequence of
-    elements the returned array will always be a copy, so writing into it will
-    not affect the underlying `Physics` instance:
+    It is also possible to bind a sequence containing one or more elements,
+    provided they are all of the same type. In this case the binding exposes
+    `SynchronizingArrayWrapper`s, which are array-like objects that provide
+    writeable views onto the corresponding memory addresses in MuJoCo. Writing
+    into a `SynchronizingArrayWrapper` causes the underlying values in MuJoCo
+    to be updated, and if necessary causes derived values to be recalculated.
+    Note that in order to trigger recalculation it is necessary to reference a
+    derived attribute of a binding.
 
     ```python
-    physics.bind([geom1, geom2]).pos  # Returns a copy.
-    physics.bind([geom1, geom2]).pos[:] = [[1, 2, 3], [4, 5, 6]]  # No effect!
+    bound_joints = physics.bind([joint1, joint2])
+    bound_bodies = physics.bind([body1, body2])
+    # `qpos_view` and `xpos_view` are `SynchronizingArrayWrapper`s providing
+    # views onto `physics.data.qpos` and `physics.data.xpos` respectively.
+    qpos_view = bound_joints.qpos
+    xpos_view = bound_bodies.xpos
+    # This updates the corresponding values in `physics.data.qpos`, and marks
+    # derived values (such as `physics.data.xpos`) as needing recalculation.
+    qpos_view[0] += 1.
+    # Note: at this point `xpos_view` still contains the old values, since we
+    # need to actually read the value of a derived attribute in order to
+    # trigger recalculation.
+    another_xpos_view = bound_bodies.xpos  # Triggers recalculation of `xpos`.
+    # Now both `xpos_view` and `another_xpos_view` will contain the updated
+    # values.
     ```
 
-    To allow for assignment into multiple elements, bindings also support
-    numpy-style square bracket indexing. The first element in the indexing
-    expression should be an attribute name, and the second element (if present)
-    is used to index into the columns of the underlying array. Named indexing
-    into columns is also allowed, provided that the corresponding field in
-    `physics.named` supports it.
+    Note that `SynchronizingArrayWrapper`s cannot be pickled. We also do not
+    recommend holding references to them - instead hold a reference to the
+    binding object, or call `physics.bind` again.
+
+    Bindings also support numpy-style square bracket indexing. The first element
+    in the indexing expression should be an attribute name, and the second
+    element (if present) is used to index into the columns of the underlying
+    array. Named indexing into columns is also allowed, provided that the
+    corresponding field in `physics.named` supports it.
 
     ```python
     physics.bind([geom1, geom2])['pos'] = [[1, 2, 3], [4, 5, 6]]

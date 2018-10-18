@@ -20,12 +20,8 @@ from __future__ import division
 from __future__ import print_function
 
 import textwrap
-
-# Internal dependencies.
-
 from dm_control.autowrap import codegen_util
 from dm_control.autowrap import header_parsing
-
 import six
 
 
@@ -85,22 +81,32 @@ class Struct(CDeclBase):
                                  is_const=is_const)
 
   @property
-  def ctypes_struct_decl(self):
+  def ctypes_decl(self):
     """Generates a ctypes.Structure declaration for self."""
     indent = codegen_util.Indenter()
-    s = textwrap.dedent("""
-    class {0.ctypes_typename:}(ctypes.Structure):
-      \"\"\"{0.docstring:}\"\"\"
-    """.format(self))
+    lines = []
+    lines.append(textwrap.dedent("""
+    class {0.ctypes_typename}(ctypes.Structure):
+      \"\"\"{0.docstring}\"\"\"""".format(self)))
+    anonymous_fields = [member.name for member in six.itervalues(self.members)
+                        if isinstance(member, AnonymousUnion)]
     with indent:
-      if self.members:
-        s += indent("\n_fields_ = [\n")
+      if anonymous_fields:
+        lines.append(indent("_anonymous_ = ["))
         with indent:
           with indent:
-            s += ",\n".join(indent(m.ctypes_field_decl)
-                            for m in six.itervalues(self.members))
-        s += indent("\n]\n")
-    return s
+            for name in anonymous_fields:
+              lines.append(indent("'" + name + "',"))
+        lines.append(indent("]"))
+
+      if self.members:
+        lines.append(indent("_fields_ = ["))
+        with indent:
+          with indent:
+            for member in six.itervalues(self.members):
+              lines.append(indent(member.ctypes_field_decl + ","))
+        lines.append(indent("]\n"))
+    return "\n".join(lines)
 
   @property
   def ctypes_typename(self):
@@ -110,7 +116,7 @@ class Struct(CDeclBase):
   @property
   def ctypes_field_decl(self):
     """Generates a declaration for self as a field of a ctypes.Structure."""
-    return "('{0.name:}', {0.ctypes_typename:})".format(self)   # pylint: disable=missing-format-attribute
+    return "('{0.name}', {0.ctypes_typename})".format(self)   # pylint: disable=missing-format-attribute
 
   @property
   def wrapper_name(self):
@@ -120,29 +126,72 @@ class Struct(CDeclBase):
   def wrapper_class(self):
     """Generates a Python class containing getter/setter methods for members."""
     indent = codegen_util.Indenter()
-    s = textwrap.dedent("""
+    lines = [textwrap.dedent("""
     class {0.wrapper_name}(util.WrapperBase):
-      \"\"\"{0.docstring:}\"\"\"
-    """.format(self))
+      \"\"\"{0.docstring}\"\"\"""".format(self))]
     with indent:
-      s += "".join(indent(m.getters_setters)
-                   for m in six.itervalues(self.members))
-    return s
+      for member in six.itervalues(self.members):
+        if isinstance(member, AnonymousUnion):
+          for submember in six.itervalues(member.members):
+            lines.append(indent(submember.getters_setters))
+        else:
+          lines.append(indent(member.getters_setters))
+    lines.append("")  # Add an extra newline at the end of the class definition.
+    return "\n".join(lines)
 
   @property
   def getters_setters(self):
     """Populates a Python class with getter & setter methods for self."""
     return textwrap.dedent("""
     @util.CachedProperty
-    def {0.name:}(self):
-      \"\"\"{0.docstring:}\"\"\"
-      return {0.wrapper_name}(ctypes.pointer(self._ptr.contents.{0.name}))
-    """.format(self))   # pylint: disable=missing-format-attribute
+    def {0.name}(self):
+      \"\"\"{0.docstring}\"\"\"
+      return {0.wrapper_name}(ctypes.pointer(self._ptr.contents.{0.name}))"""  # pylint: disable=missing-format-attribute
+                           .format(self))
 
   @property
   def arg(self):
     """String representation of self as a ctypes function argument."""
     return self.ctypes_typename
+
+
+class AnonymousUnion(CDeclBase):
+  """Anonymous union declaration."""
+
+  def __init__(self, name, members, sub_structs, comment="", parent=None):
+    super(AnonymousUnion, self).__init__(name=name,
+                                         members=members,
+                                         sub_structs=sub_structs,
+                                         comment=comment,
+                                         parent=parent)
+
+  @property
+  def ctypes_decl(self):
+    """Generates a ctypes.Union declaration for self."""
+    indent = codegen_util.Indenter()
+    lines = []
+    lines.append(textwrap.dedent("""
+    class {0.ctypes_typename}(ctypes.Union):
+      \"\"\"{0.docstring}\"\"\"""".format(self)))
+    with indent:
+      if self.members:
+        lines.append(indent("_fields_ = ["))
+        with indent:
+          with indent:
+            for member in six.itervalues(self.members):
+              lines.append(indent(member.ctypes_field_decl + ","))
+        lines.append(indent("]\n"))
+    return "\n".join(lines)
+
+  @property
+  def ctypes_typename(self):
+    """Mangles ctypes.Union typenames to distinguish them from wrappers."""
+    return codegen_util.mangle_struct_typename(self.name)
+
+  @property
+  def ctypes_field_decl(self):
+    """Generates a declaration for self as a field of a ctypes.Structure."""
+    return "('{0.name}', {0.ctypes_typename})".format(self)   # pylint: disable=missing-format-attribute
 
 
 class ScalarPrimitive(CDeclBase):
@@ -158,21 +207,20 @@ class ScalarPrimitive(CDeclBase):
   @property
   def ctypes_field_decl(self):
     """Generates a declaration for self as a field of a ctypes.Structure."""
-    return "('{0.name:}', {0.ctypes_typename:})".format(self)   # pylint: disable=missing-format-attribute
+    return "('{0.name}', {0.ctypes_typename})".format(self)   # pylint: disable=missing-format-attribute
 
   @property
   def getters_setters(self):
     """Populates a Python class with getter & setter methods for self."""
     return textwrap.dedent("""
     @property
-    def {0.name:}(self):
-      \"\"\"{0.docstring:}\"\"\"
-      return self._ptr.contents.{0.name:}
+    def {0.name}(self):
+      \"\"\"{0.docstring}\"\"\"
+      return self._ptr.contents.{0.name}
 
-    @{0.name:}.setter
-    def {0.name:}(self, value):
-      self._ptr.contents.{0.name:} = value
-    """.format(self))   # pylint: disable=missing-format-attribute
+    @{0.name}.setter
+    def {0.name}(self, value):
+      self._ptr.contents.{0.name} = value""".format(self))   # pylint: disable=missing-format-attribute
 
   @property
   def arg(self):
@@ -193,21 +241,20 @@ class ScalarPrimitivePtr(CDeclBase):
   @property
   def ctypes_field_decl(self):
     """Generates a declaration for self as a field of a ctypes.Structure."""
-    return "('{0.name:}', {0.ctypes_ptr:})".format(self)   # pylint: disable=missing-format-attribute
+    return "('{0.name}', {0.ctypes_ptr})".format(self)   # pylint: disable=missing-format-attribute
 
   @property
   def getters_setters(self):
     """Populates a Python class with getter & setter methods for self."""
     return textwrap.dedent("""
     @property
-    def {0.name:}(self):
-      \"\"\"{0.docstring:}\"\"\"
-      return self._ptr.contents.{0.name:}
+    def {0.name}(self):
+      \"\"\"{0.docstring}\"\"\"
+      return self._ptr.contents.{0.name}
 
-    @{0.name:}.setter
-    def {0.name:}(self, value):
-      self._ptr.contents.{0.name:} = value
-    """.format(self))  # pylint: disable=missing-format-attribute
+    @{0.name}.setter
+    def {0.name}(self, value):
+      self._ptr.contents.{0.name} = value""".format(self))  # pylint: disable=missing-format-attribute
 
   @property
   def arg(self):
@@ -215,8 +262,8 @@ class ScalarPrimitivePtr(CDeclBase):
     # we assume that every pointer that maps to a numpy dtype corresponds to an
     # array argument/return value
     if self.ctypes_typename in header_parsing.CTYPES_TO_NUMPY:
-      return ("util.ndptr(dtype={0.np_dtype}, flags={0.np_flags!s:})"
-              "".format(self))  # pylint: disable=missing-format-attribute
+      return ("util.ndptr(dtype={0.np_dtype}, flags={0.np_flags!s})"
+              .format(self))  # pylint: disable=missing-format-attribute
     else:
       return self.ctypes_ptr
 
@@ -237,10 +284,10 @@ class StaticPtrArray(CDeclBase):
   def ctypes_field_decl(self):
     """Generates a declaration for self as a field of a ctypes.Structure."""
     if self.typename in header_parsing.CTYPES_PTRS:
-      return "('{0.name:}', {0.ctypes_ptr:} * {1:})".format(  # pylint: disable=missing-format-attribute
+      return "('{0.name}', {0.ctypes_ptr} * {1})".format(  # pylint: disable=missing-format-attribute
           self, " * ".join(str(d) for d in self.shape))
     else:
-      return "('{0.name:}', {0.ctypes_typename:} * {1:})".format(  # pylint: disable=missing-format-attribute
+      return "('{0.name}', {0.ctypes_typename} * {1})".format(  # pylint: disable=missing-format-attribute
           self, " * ".join(str(d) for d in self.shape))
 
   @property
@@ -248,15 +295,14 @@ class StaticPtrArray(CDeclBase):
     """Populates a Python class with getter & setter methods for self."""
     return textwrap.dedent("""
     @property
-    def {0.name:}(self):
-      \"\"\"{0.docstring:}\"\"\"
-      return self._ptr.contents.{0.name:}
-    """.format(self))  # pylint: disable=missing-format-attribute
+    def {0.name}(self):
+      \"\"\"{0.docstring}\"\"\"
+      return self._ptr.contents.{0.name}""".format(self))  # pylint: disable=missing-format-attribute
 
   @property
   def arg(self):
     """Generates string representation of self as a ctypes function argument."""
-    return "{0.ctypes_typename:}".format(self)
+    return "{0.ctypes_typename}".format(self)
 
 
 class StaticNDArray(CDeclBase):
@@ -274,7 +320,7 @@ class StaticNDArray(CDeclBase):
   @property
   def ctypes_field_decl(self):
     """Generates a declaration for self as a field of a ctypes.Structure."""
-    return "('{0.name:}', {0.ctypes_typename:} * ({1:}))".format(  # pylint: disable=missing-format-attribute
+    return "('{0.name}', {0.ctypes_typename} * ({1}))".format(  # pylint: disable=missing-format-attribute
         self, " * ".join(str(d) for d in self.shape))
 
   @property
@@ -282,10 +328,10 @@ class StaticNDArray(CDeclBase):
     """Populates a Python class with a getter method for self (no setter)."""
     return textwrap.dedent("""
     @util.CachedProperty
-    def {0.name:}(self):
-      \"\"\"{0.docstring:}\"\"\"
-      return util.buf_to_npy(self._ptr.contents.{0.name:}, {0.shape!s:})
-    """.format(self))  # pylint: disable=missing-format-attribute
+    def {0.name}(self):
+      \"\"\"{0.docstring}\"\"\"
+      return util.buf_to_npy(self._ptr.contents.{0.name}, {0.shape!s})"""  # pylint: disable=missing-format-attribute
+                           .format(self))
 
   @property
   def arg(self):
@@ -312,7 +358,7 @@ class DynamicNDArray(CDeclBase):
     rs = []
     for d in self.shape:
       # dynamically-sized dimension
-      if isinstance(d, str):
+      if isinstance(d, six.string_types):
         if self.parent and d in self.parent.members:
           rs.append("self.{}".format(d))
         else:
@@ -325,24 +371,23 @@ class DynamicNDArray(CDeclBase):
   @property
   def ctypes_field_decl(self):
     """Generates a declaration for self as a field of a ctypes.Structure."""
-    return "('{0.name:}', {0.ctypes_ptr})".format(self)  # pylint: disable=missing-format-attribute
+    return "('{0.name}', {0.ctypes_ptr})".format(self)  # pylint: disable=missing-format-attribute
 
   @property
   def getters_setters(self):
     """Populates a Python class with a getter method for self (no setter)."""
     return textwrap.dedent("""
     @util.CachedProperty
-    def {0.name:}(self):
-      \"\"\"{0.docstring:}\"\"\"
-      return util.buf_to_npy(self._ptr.contents.{0.name:},
-                             {0.runtime_shape_str:})
-    """.format(self))  # pylint: disable=missing-format-attribute
+    def {0.name}(self):
+      \"\"\"{0.docstring}\"\"\"
+      return util.buf_to_npy(self._ptr.contents.{0.name},
+                             {0.runtime_shape_str})""".format(self))  # pylint: disable=missing-format-attribute
 
   @property
   def arg(self):
     """Generates string representation of self as a ctypes function argument."""
-    return ("util.ndptr(dtype={0.np_dtype}, flags={0.np_flags!s:})"
-            "".format(self))  # pylint: disable=missing-format-attribute
+    return ("util.ndptr(dtype={0.np_dtype}, flags={0.np_flags!s})"
+            .format(self))  # pylint: disable=missing-format-attribute
 
 
 class Function(CDeclBase):
@@ -381,12 +426,12 @@ class Function(CDeclBase):
   def docstring(self):
     """Generates a docstring."""
     indent = codegen_util.Indenter()
-    lines = textwrap.wrap(self.comment, 80)
+    lines = textwrap.wrap(self.comment, width=80)
     if self.arguments:
       lines.append("\nArgs:")
       with indent:
         for a in six.itervalues(self.arguments):
-          s = "{a.name:}: {a.arg:}{const:}".format(
+          s = "{a.name}: {a.arg}{const}".format(
               a=a, const=(" <const>" if a.is_const else ""))
           lines.append(indent(s))
     if self.return_value:
