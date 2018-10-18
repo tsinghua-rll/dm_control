@@ -31,6 +31,7 @@
     <geom name="floor" type="plane" conaffinity="1" size="100 100 .2" material="grid"/>
     <light name="tracking_light" pos="0 0 7" dir="0 0 -1" mode="trackcom"/>
     <camera name="back" pos="0 3 2.4" xyaxes="-1 0 0 0 -1 2" mode="trackcom"/>
+    <camera name="front" pos="0 -3 2.4" xyaxes="1 0 0 0 1 2" mode="trackcom"/>
     <camera name="side" pos="-3 0 2.4" xyaxes="0 -1 0 1 0 2" mode="trackcom"/>
     <body name="root" childclass="humanoid" pos="0 0 1" euler="90 0 0">
       <site name="root" size=".01" rgba="0.5 0.5 0.5 0"/>

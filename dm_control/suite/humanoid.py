@@ -154,6 +154,7 @@ class Humanoid(base.Task):
     """
     self._move_speed = move_speed
     self._pure_state = pure_state
+    self.done = False
     super(Humanoid, self).__init__(random=random)
 
   def initialize_episode(self, physics):
@@ -187,27 +188,36 @@ class Humanoid(base.Task):
     return obs
 
   def get_reward(self, physics):
-    """Returns a reward to the agent."""
-    standing = rewards.tolerance(physics.head_height(),
-                                 bounds=(_STAND_HEIGHT, float('inf')),
-                                 margin=_STAND_HEIGHT/4)
-    upright = rewards.tolerance(physics.torso_upright(),
-                                bounds=(0.9, float('inf')), sigmoid='linear',
-                                margin=1.9, value_at_margin=0)
-    stand_reward = standing * upright
-    small_control = rewards.tolerance(physics.control(), margin=1,
-                                      value_at_margin=0,
-                                      sigmoid='quadratic').mean()
-    small_control = (4 + small_control) / 5
-    if self._move_speed == 0:
-      horizontal_velocity = physics.center_of_mass_velocity()[[0, 1]]
-      dont_move = rewards.tolerance(horizontal_velocity, margin=2).mean()
-      return small_control * stand_reward * dont_move
-    else:
-      com_velocity = np.linalg.norm(physics.center_of_mass_velocity()[[0, 1]])
-      move = rewards.tolerance(com_velocity,
-                               bounds=(self._move_speed, float('inf')),
-                               margin=self._move_speed, value_at_margin=0,
-                               sigmoid='linear')
-      move = (5*move + 1) / 6
-      return small_control * stand_reward * move
+    # A gym style reward
+    alive_bonus = 5.0
+    lin_vel_cost = physics.center_of_mass_velocity()[0] * 0.25
+    quad_ctrl_cost = 0.1 * np.square(physics.data.ctrl).sum()
+    quad_impact_cost = .5e-6 * np.square(physics.data.cfrc_ext).sum()
+    quad_impact_cost = min(quad_impact_cost, 10)
+    reward = lin_vel_cost - quad_ctrl_cost - quad_impact_cost + alive_bonus
+    self.done = bool((physics.data.qpos[2] < 1.0) or (physics.data.qpos[2] > 2.0))
+    return reward
+    # """Returns a reward to the agent."""
+    # standing = rewards.tolerance(physics.head_height(),
+    #                              bounds=(_STAND_HEIGHT, float('inf')),
+    #                              margin=_STAND_HEIGHT/4)
+    # upright = rewards.tolerance(physics.torso_upright(),
+    #                             bounds=(0.9, float('inf')), sigmoid='linear',
+    #                             margin=1.9, value_at_margin=0)
+    # stand_reward = standing * upright
+    # small_control = rewards.tolerance(physics.control(), margin=1,
+    #                                   value_at_margin=0,
+    #                                   sigmoid='quadratic').mean()
+    # small_control = (4 + small_control) / 5
+    # if self._move_speed == 0:
+    #   horizontal_velocity = physics.center_of_mass_velocity()[[0, 1]]
+    #   dont_move = rewards.tolerance(horizontal_velocity, margin=2).mean()
+    #   return small_control * stand_reward * dont_move
+    # else:
+    #   com_velocity = np.linalg.norm(physics.center_of_mass_velocity()[[0, 1]])
+    #   move = rewards.tolerance(com_velocity,
+    #                            bounds=(self._move_speed, float('inf')),
+    #                            margin=self._move_speed, value_at_margin=0,
+    #                            sigmoid='linear')
+    #   move = (5*move + 1) / 6
+    #   return small_control * stand_reward * move
