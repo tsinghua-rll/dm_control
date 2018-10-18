@@ -189,7 +189,7 @@ class Humanoid(base.Task):
   def get_reward(self, physics):
     # A gym style reward
     alive_bonus = 5.0
-    lin_vel_cost = center_of_mass_velocity()[0] * 0.25
+    lin_vel_cost = physics.center_of_mass_velocity()[0] * 0.25
     quad_ctrl_cost = 0.1 * np.square(physics.data.ctrl).sum()
     quad_impact_cost = .5e-6 * np.square(physics.data.cfrc_ext).sum()
     quad_impact_cost = min(quad_impact_cost, 10)
